@@ -6,9 +6,21 @@ using System.Windows.Forms;
 
 namespace ProducerConsumerSystem
 {
+    public struct BufferItem
+    {
+        public int Data { get; set; }
+        public int ProducerIndex { get; set; }
+
+        public BufferItem(int data, int producerIndex)
+        {
+            Data = data;
+            ProducerIndex = producerIndex;
+        }
+    }
+
     public partial class Form1 : Form
     {
-        private LinkedList<int> buffer = new LinkedList<int>();
+        private LinkedList<BufferItem> buffer = new LinkedList<BufferItem>();
         private const int BUFFER_SIZE = 10;
         private Random random = new Random();
 
@@ -137,27 +149,35 @@ namespace ProducerConsumerSystem
 
             while (isConsuming)
             {
-                int data;
+                BufferItem? item = null;
                 lock (lockObject)
                 {
                     if (buffer.Count > 0)
                     {
-                        data = buffer.First?.Value ?? -1;
-                        buffer.RemoveFirst();
-                        UpdateUI(() =>
+                        item = buffer.First?.Value;
+                        if (item.HasValue)
                         {
-                            consumerTextBox.AppendText($"消费者 {consumerIndex + 1} 消费: {data}\r\n");
-                            DrawLinkedList();
-                        });
-                    }
-                    else
-                    {
-                        continue;
+                            buffer.RemoveFirst();
+                            UpdateUI(() =>
+                            {
+                                consumerTextBox.AppendText($"消费者 {consumerIndex + 1} 消费: {item.Value.Data} (来自生产者 {item.Value.ProducerIndex + 1})\r\n");
+                                DrawLinkedList();
+                            });
+                        }
                     }
                 }
-                Thread.Sleep(random.Next(500, 1500));
+
+                if (item.HasValue)
+                {
+                    Thread.Sleep(random.Next(500, 1500));
+                }
+                else
+                {
+                    Thread.Sleep(100); // 如果缓冲区为空，稍微等待一下再检查
+                }
             }
         }
+
 
         private void ProducerThread(int producerIndex)
         {
@@ -168,7 +188,7 @@ namespace ProducerConsumerSystem
                 {
                     if (buffer.Count < BUFFER_SIZE)
                     {
-                        buffer.AddLast(data);
+                        buffer.AddLast(new BufferItem(data, producerIndex));
                         UpdateUI(() =>
                         {
                             producerTextBox.SelectionStart = producerTextBox.TextLength;
@@ -207,10 +227,11 @@ namespace ProducerConsumerSystem
                 Font font = new Font("Arial", 10);
                 Pen pen = new Pen(Color.Black, 2);
 
-                foreach (int data in buffer)
+                foreach (BufferItem item in buffer)
                 {
+                    g.FillRectangle(new SolidBrush(producerColors[item.ProducerIndex]), x, y - 15, 30, 30);
                     g.DrawRectangle(pen, x, y - 15, 30, 30);
-                    g.DrawString(data.ToString(), font, Brushes.Black, x + 5, y - 10);
+                    g.DrawString(item.Data.ToString(), font, Brushes.Black, x + 5, y - 10);
                     if (x + 60 < linkedListPictureBox.Width - 40)
                     {
                         g.DrawLine(pen, x + 30, y, x + 60, y);
