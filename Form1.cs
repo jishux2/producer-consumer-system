@@ -30,14 +30,22 @@ namespace ProducerConsumerSystem
         private bool[] isProducing = new bool[4];
         private bool isConsuming = false;
 
-        private object lockObject = new object();
-
         private Color[] producerColors = { Color.Red, Color.Blue, Color.Green, Color.Orange };
+
+        // 信号量
+        private Semaphore emptyCount;
+        private Semaphore fullCount;
+        private Semaphore mutex;
 
         public Form1()
         {
             InitializeComponent();
             InitializeUI();
+
+            // 初始化信号量
+            emptyCount = new Semaphore(BUFFER_SIZE, BUFFER_SIZE);
+            fullCount = new Semaphore(0, BUFFER_SIZE);
+            mutex = new Semaphore(1, 1);
         }
 
         private void InitializeUI()
@@ -149,57 +157,65 @@ namespace ProducerConsumerSystem
 
             while (isConsuming)
             {
+                fullCount.WaitOne();  // 等待有数据可消费
+                mutex.WaitOne();  // 进入临界区
+
                 BufferItem? item = null;
-                lock (lockObject)
+                if (buffer.Count > 0)
                 {
-                    if (buffer.Count > 0)
+                    item = buffer.First?.Value;
+                    if (item.HasValue)
                     {
-                        item = buffer.First?.Value;
-                        if (item.HasValue)
-                        {
-                            buffer.RemoveFirst();
-                            UpdateUI(() =>
-                            {
-                                consumerTextBox.AppendText($"消费者 {consumerIndex + 1} 消费: {item.Value.Data} (来自生产者 {item.Value.ProducerIndex + 1})\r\n");
-                                DrawLinkedList();
-                            });
-                        }
+                        buffer.RemoveFirst();
                     }
                 }
 
+                mutex.Release();  // 离开临界区
+
                 if (item.HasValue)
                 {
+                    emptyCount.Release();  // 增加一个空位
+
+                    UpdateUI(() =>
+                    {
+                        consumerTextBox.AppendText($"消费者 {consumerIndex + 1} 消费: {item.Value.Data} (来自生产者 {item.Value.ProducerIndex + 1})\r\n");
+                        DrawLinkedList();
+                    });
+
                     Thread.Sleep(random.Next(500, 1500));
                 }
                 else
                 {
-                    Thread.Sleep(100); // 如果缓冲区为空，稍微等待一下再检查
+                    // 理论上不应该发生，但如果发生了，我们需要释放一个满位信号
+                    fullCount.Release();
                 }
             }
         }
-
 
         private void ProducerThread(int producerIndex)
         {
             while (isProducing[producerIndex])
             {
                 int data = random.Next(1, 100);
-                lock (lockObject)
+
+                emptyCount.WaitOne();  // 等待有空位
+                mutex.WaitOne();  // 进入临界区
+
+                buffer.AddLast(new BufferItem(data, producerIndex));
+
+                mutex.Release();  // 离开临界区
+                fullCount.Release();  // 增加一个满位
+
+                UpdateUI(() =>
                 {
-                    if (buffer.Count < BUFFER_SIZE)
-                    {
-                        buffer.AddLast(new BufferItem(data, producerIndex));
-                        UpdateUI(() =>
-                        {
-                            producerTextBox.SelectionStart = producerTextBox.TextLength;
-                            producerTextBox.SelectionLength = 0;
-                            producerTextBox.SelectionColor = producerColors[producerIndex];
-                            producerTextBox.AppendText($"生产者 {producerIndex + 1} 生产: {data}\r\n");
-                            producerTextBox.ScrollToCaret();
-                            DrawLinkedList();
-                        });
-                    }
-                }
+                    producerTextBox.SelectionStart = producerTextBox.TextLength;
+                    producerTextBox.SelectionLength = 0;
+                    producerTextBox.SelectionColor = producerColors[producerIndex];
+                    producerTextBox.AppendText($"生产者 {producerIndex + 1} 生产: {data}\r\n");
+                    producerTextBox.ScrollToCaret();
+                    DrawLinkedList();
+                });
+
                 Thread.Sleep(random.Next(500, 1500));
             }
         }
