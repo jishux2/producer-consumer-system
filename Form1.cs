@@ -12,14 +12,6 @@ namespace ProducerConsumerSystem
         private const int BUFFER_SIZE = 10;
         private Random random = new Random();
 
-        private TextBox consumerTextBox1;
-        private TextBox consumerTextBox2;
-        private RichTextBox producerTextBox;
-        private PictureBox linkedListPictureBox;
-
-        private Button startConsumersButton;
-        private Button[] producerButtons = new Button[4];
-
         private Thread[] consumerThreads = new Thread[2];
         private Thread[] producerThreads = new Thread[4];
 
@@ -98,7 +90,7 @@ namespace ProducerConsumerSystem
             }
         }
 
-        private void StartConsumersButton_Click(object sender, EventArgs e)
+        private void StartConsumersButton_Click(object? sender, EventArgs e)
         {
             if (!isConsuming)
             {
@@ -117,12 +109,12 @@ namespace ProducerConsumerSystem
                 startConsumersButton.Text = "开始消费";
                 for (int i = 0; i < 2; i++)
                 {
-                    consumerThreads[i].Join();
+                    consumerThreads[i]?.Join();
                 }
             }
         }
 
-        private void ProducerButton_Click(object sender, EventArgs e, int producerIndex)
+        private void ProducerButton_Click(object? sender, EventArgs e, int producerIndex)
         {
             if (!isProducing[producerIndex])
             {
@@ -135,7 +127,7 @@ namespace ProducerConsumerSystem
             {
                 isProducing[producerIndex] = false;
                 producerButtons[producerIndex].Text = $"生产者 {producerIndex + 1}";
-                producerThreads[producerIndex].Join();
+                producerThreads[producerIndex]?.Join();
             }
         }
 
@@ -150,7 +142,7 @@ namespace ProducerConsumerSystem
                 {
                     if (buffer.Count > 0)
                     {
-                        data = buffer.First.Value;
+                        data = buffer.First?.Value ?? -1;
                         buffer.RemoveFirst();
                         UpdateUI(() =>
                         {
