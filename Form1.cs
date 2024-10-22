@@ -2,19 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace ProducerConsumerSystem
 {
-    public static class FormExtensions
-    {
-        public static Task InvokeAsync(this Form form, Action action)
-        {
-            return Task.Factory.FromAsync(form.BeginInvoke(action), form.EndInvoke);
-        }
-    }
-
     public struct BufferItem
     {
         public int Data { get; set; }
@@ -33,19 +24,18 @@ namespace ProducerConsumerSystem
         private const int BUFFER_SIZE = 10;
         private Random random = new Random();
 
-        private Task[] consumerTasks = new Task[2];
-        private bool consumersStarted = false;
-        private Task[] producerTasks = new Task[4];
+        private Thread[] consumerThreads = new Thread[2];
+        private Thread[] producerThreads = new Thread[4];
 
-        private CancellationTokenSource[] producerCts = new CancellationTokenSource[4];
-        private CancellationTokenSource consumerCts = new CancellationTokenSource();
+        private bool[] isProducing = new bool[4];
+        private bool isConsuming = false;
 
         private Color[] producerColors = { Color.Red, Color.Blue, Color.Green, Color.Orange };
 
         // 信号量
-        private SemaphoreSlim emptyCount;
-        private SemaphoreSlim fullCount;
-        private SemaphoreSlim mutex;
+        private Semaphore emptyCount;
+        private Semaphore fullCount;
+        private Semaphore mutex;
 
         public Form1()
         {
@@ -53,9 +43,9 @@ namespace ProducerConsumerSystem
             InitializeUI();
 
             // 初始化信号量
-            emptyCount = new SemaphoreSlim(BUFFER_SIZE, BUFFER_SIZE);
-            fullCount = new SemaphoreSlim(0, BUFFER_SIZE);
-            mutex = new SemaphoreSlim(1, 1);
+            emptyCount = new Semaphore(BUFFER_SIZE, BUFFER_SIZE);
+            fullCount = new Semaphore(0, BUFFER_SIZE);
+            mutex = new Semaphore(1, 1);
         }
 
         private void InitializeUI()
@@ -120,156 +110,121 @@ namespace ProducerConsumerSystem
             }
         }
 
-        private async void StartConsumersButton_Click(object? sender, EventArgs e)
+        private void StartConsumersButton_Click(object? sender, EventArgs e)
         {
-            if (sender == null) return;
-
-            if (!consumersStarted)
+            if (!isConsuming)
             {
-                consumersStarted = true;
-                consumerCts = new CancellationTokenSource();
+                isConsuming = true;
                 startConsumersButton.Text = "停止消费";
                 for (int i = 0; i < 2; i++)
                 {
                     int consumerIndex = i;
-                    consumerTasks[i] = ConsumerTask(consumerIndex, consumerCts.Token);
+                    consumerThreads[i] = new Thread(() => ConsumerThread(consumerIndex));
+                    consumerThreads[i].Start();
                 }
             }
             else
             {
+                isConsuming = false;
                 startConsumersButton.Text = "开始消费";
-                consumerCts.Cancel();
-                try
+                for (int i = 0; i < 2; i++)
                 {
-                    await Task.WhenAll(consumerTasks.Where(t => t != null));
-                }
-                catch (OperationCanceledException)
-                {
-                    // 预期的取消异常，可以忽略
-                }
-                finally
-                {
-                    consumerCts.Dispose();
-                    consumersStarted = false;
+                    consumerThreads[i]?.Join();
                 }
             }
         }
 
-        private async void ProducerButton_Click(object? sender, EventArgs e, int producerIndex)
+        private void ProducerButton_Click(object? sender, EventArgs e, int producerIndex)
         {
-            if (producerCts[producerIndex]?.IsCancellationRequested ?? true)
+            if (!isProducing[producerIndex])
             {
-                producerCts[producerIndex] = new CancellationTokenSource();
+                isProducing[producerIndex] = true;
                 producerButtons[producerIndex].Text = $"停止生产者 {producerIndex + 1}";
-                producerTasks[producerIndex] = ProducerTask(producerIndex, producerCts[producerIndex].Token);
+                producerThreads[producerIndex] = new Thread(() => ProducerThread(producerIndex));
+                producerThreads[producerIndex].Start();
             }
             else
             {
+                isProducing[producerIndex] = false;
                 producerButtons[producerIndex].Text = $"生产者 {producerIndex + 1}";
-                producerCts[producerIndex].Cancel();
-                try
-                {
-                    await producerTasks[producerIndex];
-                }
-                catch (OperationCanceledException)
-                {
-                    // 预期的取消异常，可以忽略
-                }
-                finally
-                {
-                    producerCts[producerIndex].Dispose();
-                }
+                producerThreads[producerIndex]?.Join();
             }
         }
 
-        private async Task ConsumerTask(int consumerIndex, CancellationToken cancellationToken)
+        private void ConsumerThread(int consumerIndex)
         {
             TextBox consumerTextBox = consumerIndex == 0 ? consumerTextBox1 : consumerTextBox2;
 
-            while (!cancellationToken.IsCancellationRequested)
+            while (isConsuming)
             {
-                try
+                fullCount.WaitOne();  // 等待有数据可消费
+                mutex.WaitOne();  // 进入临界区
+
+                BufferItem? item = null;
+                if (buffer.Count > 0)
                 {
-                    await fullCount.WaitAsync(cancellationToken);
-                    await mutex.WaitAsync(cancellationToken);
-
-                    BufferItem? item = null;
-                    if (buffer.Count > 0)
-                    {
-                        var first = buffer.First;
-                        if (first != null)
-                        {
-                            item = first.Value;
-                            buffer.RemoveFirst();
-                        }
-                    }
-
-                    mutex.Release();
-
+                    item = buffer.First?.Value;
                     if (item.HasValue)
                     {
-                        emptyCount.Release();
-
-                        await UpdateUIAsync(() =>
-                        {
-                            consumerTextBox.AppendText($"消费者 {consumerIndex + 1} 消费: {item.Value.Data} (来自生产者 {item.Value.ProducerIndex + 1})\r\n");
-                            DrawLinkedList();
-                        });
-
-                        await Task.Delay(random.Next(500, 1500), cancellationToken);
-                    }
-                    else
-                    {
-                        fullCount.Release();
+                        buffer.RemoveFirst();
                     }
                 }
-                catch (OperationCanceledException)
+
+                mutex.Release();  // 离开临界区
+
+                if (item.HasValue)
                 {
-                    break;
-                }
-            }
-        }
+                    emptyCount.Release();  // 增加一个空位
 
-        private async Task ProducerTask(int producerIndex, CancellationToken cancellationToken)
-        {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                try
-                {
-                    int data = random.Next(1, 100);
-
-                    await emptyCount.WaitAsync(cancellationToken);
-                    await mutex.WaitAsync(cancellationToken);
-
-                    buffer.AddLast(new BufferItem(data, producerIndex));
-
-                    mutex.Release();
-                    fullCount.Release();
-
-                    await UpdateUIAsync(() =>
+                    UpdateUI(() =>
                     {
-                        producerTextBox.SelectionStart = producerTextBox.TextLength;
-                        producerTextBox.SelectionLength = 0;
-                        producerTextBox.SelectionColor = producerColors[producerIndex];
-                        producerTextBox.AppendText($"生产者 {producerIndex + 1} 生产: {data}\r\n");
-                        producerTextBox.ScrollToCaret();
+                        consumerTextBox.AppendText($"消费者 {consumerIndex + 1} 消费: {item.Value.Data} (来自生产者 {item.Value.ProducerIndex + 1})\r\n");
                         DrawLinkedList();
                     });
 
-                    await Task.Delay(random.Next(500, 1500), cancellationToken);
+                    Thread.Sleep(random.Next(500, 1500));
                 }
-                catch (OperationCanceledException)
+                else
                 {
-                    break;
+                    // 理论上不应该发生，但如果发生了，我们需要释放一个满位信号
+                    fullCount.Release();
                 }
             }
         }
 
-        private async Task UpdateUIAsync(Action action)
+        private void ProducerThread(int producerIndex)
+        {
+            while (isProducing[producerIndex])
+            {
+                int data = random.Next(1, 100);
+
+                emptyCount.WaitOne();  // 等待有空位
+                mutex.WaitOne();  // 进入临界区
+
+                buffer.AddLast(new BufferItem(data, producerIndex));
+
+                mutex.Release();  // 离开临界区
+                fullCount.Release();  // 增加一个满位
+
+                UpdateUI(() =>
+                {
+                    producerTextBox.SelectionStart = producerTextBox.TextLength;
+                    producerTextBox.SelectionLength = 0;
+                    producerTextBox.SelectionColor = producerColors[producerIndex];
+                    producerTextBox.AppendText($"生产者 {producerIndex + 1} 生产: {data}\r\n");
+                    producerTextBox.ScrollToCaret();
+                    DrawLinkedList();
+                });
+
+                Thread.Sleep(random.Next(500, 1500));
+            }
+        }
+
+        private void UpdateUI(Action action)
         {
             if (this.InvokeRequired)
             {
-                await this.InvokeAsync(action);
+                this.Invoke(action);
             }
             else
             {
