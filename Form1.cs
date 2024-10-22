@@ -27,6 +27,9 @@ namespace ProducerConsumerSystem
         private Thread[] consumerThreads = new Thread[2];
         private Thread[] producerThreads = new Thread[4];
 
+        private CancellationTokenSource[] producerCts = new CancellationTokenSource[4];
+        private CancellationTokenSource consumerCts = new CancellationTokenSource();
+
         private bool[] isProducing = new bool[4];
         private bool isConsuming = false;
 
@@ -110,16 +113,17 @@ namespace ProducerConsumerSystem
             }
         }
 
-        private void StartConsumersButton_Click(object? sender, EventArgs e)
+        private async void StartConsumersButton_Click(object? sender, EventArgs e)
         {
             if (!isConsuming)
             {
                 isConsuming = true;
                 startConsumersButton.Text = "停止消费";
+                consumerCts = new CancellationTokenSource();
                 for (int i = 0; i < 2; i++)
                 {
                     int consumerIndex = i;
-                    consumerThreads[i] = new Thread(() => ConsumerThread(consumerIndex));
+                    consumerThreads[i] = new Thread(() => ConsumerThread(consumerIndex, consumerCts.Token));
                     consumerThreads[i].Start();
                 }
             }
@@ -127,96 +131,101 @@ namespace ProducerConsumerSystem
             {
                 isConsuming = false;
                 startConsumersButton.Text = "开始消费";
-                for (int i = 0; i < 2; i++)
+                consumerCts.Cancel();
+                await Task.Run(() =>
                 {
-                    consumerThreads[i]?.Join();
-                }
+                    for (int i = 0; i < 2; i++)
+                    {
+                        consumerThreads[i]?.Join(1000); // 等待最多1秒
+                    }
+                });
             }
         }
 
-        private void ProducerButton_Click(object? sender, EventArgs e, int producerIndex)
+        private async void ProducerButton_Click(object? sender, EventArgs e, int producerIndex)
         {
             if (!isProducing[producerIndex])
             {
                 isProducing[producerIndex] = true;
                 producerButtons[producerIndex].Text = $"停止生产者 {producerIndex + 1}";
-                producerThreads[producerIndex] = new Thread(() => ProducerThread(producerIndex));
+                producerCts[producerIndex] = new CancellationTokenSource();
+                producerThreads[producerIndex] = new Thread(() => ProducerThread(producerIndex, producerCts[producerIndex].Token));
                 producerThreads[producerIndex].Start();
             }
             else
             {
                 isProducing[producerIndex] = false;
                 producerButtons[producerIndex].Text = $"生产者 {producerIndex + 1}";
-                producerThreads[producerIndex]?.Join();
+                producerCts[producerIndex].Cancel();
+                await Task.Run(() => producerThreads[producerIndex]?.Join(1000)); // 等待最多1秒
             }
         }
 
-        private void ConsumerThread(int consumerIndex)
+        private void ConsumerThread(int consumerIndex, CancellationToken cancellationToken)
         {
             TextBox consumerTextBox = consumerIndex == 0 ? consumerTextBox1 : consumerTextBox2;
 
-            while (isConsuming)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                fullCount.WaitOne();  // 等待有数据可消费
-                mutex.WaitOne();  // 进入临界区
-
-                BufferItem? item = null;
-                if (buffer.Count > 0)
+                if (fullCount.WaitOne(100)) // 等待最多100毫秒
                 {
-                    item = buffer.First?.Value;
+                    mutex.WaitOne();
+
+                    BufferItem? item = null;
+                    if (buffer.Count > 0)
+                    {
+                        item = buffer.First?.Value;
+                        if (item.HasValue)
+                        {
+                            buffer.RemoveFirst();
+                        }
+                    }
+
+                    mutex.Release();
+
                     if (item.HasValue)
                     {
-                        buffer.RemoveFirst();
+                        emptyCount.Release();
+
+                        UpdateUI(() =>
+                        {
+                            consumerTextBox.AppendText($"消费者 {consumerIndex + 1} 消费: {item.Value.Data} (来自生产者 {item.Value.ProducerIndex + 1})\r\n");
+                            DrawLinkedList();
+                        });
+
+                        Thread.Sleep(random.Next(500, 1500));
                     }
                 }
+            }
+        }
 
-                mutex.Release();  // 离开临界区
+        private void ProducerThread(int producerIndex, CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                int data = random.Next(1, 100);
 
-                if (item.HasValue)
+                if (emptyCount.WaitOne(100)) // 等待最多100毫秒
                 {
-                    emptyCount.Release();  // 增加一个空位
+                    mutex.WaitOne();
+
+                    buffer.AddLast(new BufferItem(data, producerIndex));
+
+                    mutex.Release();
+                    fullCount.Release();
 
                     UpdateUI(() =>
                     {
-                        consumerTextBox.AppendText($"消费者 {consumerIndex + 1} 消费: {item.Value.Data} (来自生产者 {item.Value.ProducerIndex + 1})\r\n");
+                        producerTextBox.SelectionStart = producerTextBox.TextLength;
+                        producerTextBox.SelectionLength = 0;
+                        producerTextBox.SelectionColor = producerColors[producerIndex];
+                        producerTextBox.AppendText($"生产者 {producerIndex + 1} 生产: {data}\r\n");
+                        producerTextBox.ScrollToCaret();
                         DrawLinkedList();
                     });
 
                     Thread.Sleep(random.Next(500, 1500));
                 }
-                else
-                {
-                    // 理论上不应该发生，但如果发生了，我们需要释放一个满位信号
-                    fullCount.Release();
-                }
-            }
-        }
-
-        private void ProducerThread(int producerIndex)
-        {
-            while (isProducing[producerIndex])
-            {
-                int data = random.Next(1, 100);
-
-                emptyCount.WaitOne();  // 等待有空位
-                mutex.WaitOne();  // 进入临界区
-
-                buffer.AddLast(new BufferItem(data, producerIndex));
-
-                mutex.Release();  // 离开临界区
-                fullCount.Release();  // 增加一个满位
-
-                UpdateUI(() =>
-                {
-                    producerTextBox.SelectionStart = producerTextBox.TextLength;
-                    producerTextBox.SelectionLength = 0;
-                    producerTextBox.SelectionColor = producerColors[producerIndex];
-                    producerTextBox.AppendText($"生产者 {producerIndex + 1} 生产: {data}\r\n");
-                    producerTextBox.ScrollToCaret();
-                    DrawLinkedList();
-                });
-
-                Thread.Sleep(random.Next(500, 1500));
             }
         }
 
